@@ -1,5 +1,9 @@
 # QAMax Adversary Site
 
+[QualityMax documentation](https://docs.qualitymax.io/)
+
+This repository is a controlled crawler-security test fixture, not an application template or a production deployment guide.
+
 A purpose-built hostile web page for testing the security hardening of the QualityMax demo crawl pipeline. Deployed on Railway and used in automated security tests.
 
 **This is authorized security testing infrastructure. Do not use against systems you do not own.**
